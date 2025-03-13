@@ -1,0 +1,132 @@
+---
+title: "Pig Membrane Proteins"
+output: html_notebook
+---
+
+## SenyoLab Proteomics Research
+#### PI: Samuel Senyo, PhD
+#### @author: Valinteshley Pierre
+
+##### _Date: 03/07/2025_
+_Last updated:_
+
+## Import libraries
+```{r}
+library(httr)
+library(jsonlite)
+library(dplyr)
+library(openxlsx)
+library(readxl)
+```
+
+## Import External Datasets
+```{r}
+# From MatrixDB
+matrixdb_mem <- read_excel("matrixdb/proteins_Membrane.xlsx")
+# matrixdb_mem <- matrixdb_mem %>% slice(1:1000)
+
+# Our Proteomics data
+pig_data <- read_excel("pig_data.xlsx")
+```
+
+## Function
+```{r}
+
+fetch_uniprot_data_batch <- function(dataset, accession_col, save_as = NULL) {
+  
+  # Extract unique accession numbers
+  accessions <- unique(dataset[[accession_col]])
+  
+  # UniProt batch retrieval API URL
+  base_url <- "https://rest.uniprot.org/uniprotkb/search?query="
+  
+  # Fields to retrieve: Accession, Gene Name, Protein Description
+  fields <- "&fields=accession,gene_names,protein_name"
+  
+  # Split accessions into batches of 500 (max allowed by UniProt)
+  batches <- split(accessions, ceiling(seq_along(accessions) / 100))
+  
+  # Initialize an empty list to store results
+  valid_entries <- list()
+  batch_iter <- 0
+  for (batch in batches) {
+    # Create query string
+    accession_string <- paste(batch, collapse = "+OR+")
+    query_url <- paste0(base_url, accession_string, fields, "&format=json")
+    # print(query_url)
+    
+    # Make the batch request
+    response <- GET(query_url)
+    # parsed_text <- content(response, as = "text")
+    # parsed_response <- fromJSON(parsed_text)
+    # print("Printing parsed_response")
+    # str(parsed_response$results$genes[[1]]$geneName$value)
+    
+    print(paste("Batch", batch_iter))
+    batch_iter <- batch_iter + 1
+    
+    # Check for valid response
+    if (status_code(response) == 200) {
+      content <- fromJSON(content(response, as = "text", encoding = "UTF-8"))
+      
+      # Extract the results data frame from parsed response
+      results_df <- content$results
+      
+      # Iterate through the results to check for valid data
+      for (i in 1:nrow(results_df)) {
+        # Check if entryType is not "Inactive" and primaryAccession is present
+        if (results_df$entryType[i] != "Inactive" &&
+            !is.null(results_df$primaryAccession[i]) &&
+            !is.na(results_df$primaryAccession[i])) {
+          
+          # Extract the relevant information
+          accession <- results_df$primaryAccession[i]
+          print(accession)
+          
+          protein_name <- (results_df$proteinDescription$recommendedName$fullName$value[i])
+          
+          # Check if gene name exists
+          gene_name <- ifelse(length(results_df$genes[[i]]) > 0 && !is.null(results_df$genes[[i]]$geneName),
+                            results_df$genes[[i]]$geneName$value[1],
+                            NA)
+        
+          # Add valid entry to the list
+          valid_entries[[length(valid_entries) + 1]] <- data.frame(
+            accession = accession,
+            protein_name = protein_name,
+            gene_name = gene_name,
+            stringsAsFactors = FALSE
+          )
+        }
+      }
+      
+    } else {
+      warning("Error retrieving data from UniProt for batch. Skipping batch.")
+    }
+    
+    # Small delay to prevent hitting API limits
+    Sys.sleep(1)
+  }
+  
+  # Combine all valid entries into a single data frame
+  protein_data <- do.call(rbind, valid_entries)
+  
+  # Combine all batch results into a single data frame
+  # final_df <- bind_rows(all_results)
+  
+  # Save to Excel if filename is provided
+  if (!is.null(save_as)) {
+    write.xlsx(protein_data, save_as, overwrite = TRUE)
+    message("File saved as: ", save_as)
+  }
+  
+  return(protein_data)
+}
+
+```
+
+### Get membrane proteins ID from UniProt for the MatrixDB Dataset
+```{r}
+protein_info <- fetch_uniprot_data_batch(dataset = matrixdb_mem, accession_col = "Uniprot primary AC", save_as = "matrixdb_membrane.xlsx")
+```
+
